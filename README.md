@@ -148,3 +148,7 @@ xiaoheihe-cli login --browser safari
 ## 许可证
 
 非官方小黑盒工具，采用 [MIT License](LICENSE)。
+
+## 致谢
+
+Built on [opxqo/xiaoheihe-cli](https://github.com/opxqo/xiaoheihe-cli), with earlier work by [@tlkppm](https://github.com/tlkppm). 感谢原作者及维护者的开源贡献。
