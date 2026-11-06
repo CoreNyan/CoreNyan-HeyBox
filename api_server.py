@@ -113,7 +113,7 @@ def _extract_link_id(value: str) -> str:
 
 
 def operator_http_error(error):
-    status = {"auth": 401, "captcha": 428, "rate_limit": 429, "network": 503}.get(error.code, 502)
+    status = {"auth": 401, "forbidden": 403, "captcha": 428, "rate_limit": 429, "network": 503}.get(error.code, 502)
     return HTTPException(status_code=status, detail={"code": error.code, "message": str(error)})
 
 

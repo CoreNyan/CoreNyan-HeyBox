@@ -65,9 +65,7 @@ class XiaoheiheAPIClient:
                     "is_first": 1 if page_num == 1 and is_first else 0,
                     "index": 1,
                     "owner_only": 0,
-                    "offset": (page_num - 1) * limit,
                     "limit": limit,
-                    "sort_filter": "oldest",
                 },
             )
 

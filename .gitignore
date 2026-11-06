@@ -58,6 +58,9 @@ _creator_report*
 # Private container session
 session/
 
+# Bridge durable local delivery / RPC journal (contains comment payloads)
+bridge_state.sqlite3*
+
 # Runtime exports and local authentication material
 *.csv
 *.json

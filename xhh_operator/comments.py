@@ -6,10 +6,11 @@ from html.parser import HTMLParser
 from .errors import OperatorError, ProtocolError
 
 
-async def read_thread(api, link_id, *, page_size=20, max_pages=100):
+async def read_thread(api, link_id, *, page_size=20, max_pages=100, allow_partial=False):
     if not 1 <= page_size <= 100 or not 1 <= max_pages <= 100:
         raise ValueError("评论分页范围无效。")
-    groups, seen, offset = [], set(), 0
+    groups, seen = [], set()
+    count_mismatches = []
     first = None
     for page in range(max_pages):
         data = await api.request(
@@ -20,9 +21,7 @@ async def read_thread(api, link_id, *, page_size=20, max_pages=100):
                 "is_first": 1 if page == 0 else 0,
                 "index": 1,
                 "owner_only": 0,
-                "offset": offset,
                 "limit": page_size,
-                "sort_filter": "oldest",
             },
         )
         if first is None:
@@ -30,7 +29,14 @@ async def read_thread(api, link_id, *, page_size=20, max_pages=100):
         result = data.get("result") or {}
         page_groups = result.get("comments") or []
         if not page_groups and result.get("has_more_floors"):
-            raise ProtocolError("空评论页仍标记为有下一页，结果不完整。")
+            if not allow_partial:
+                raise ProtocolError("空评论页仍标记为有下一页，结果不完整。")
+            first["result"]["comments"] = groups
+            first["result"]["full_comments"] = False
+            first["result"]["incomplete_reasons"] = {"empty_root_page_with_more": page + 1,
+                "child_count_mismatch": count_mismatches}
+            # Retain the upstream has_more flag: an empty page is not proof of completion.
+            return first
         for group in page_groups:
             items = group.get("comment") or []
             if not items:
@@ -48,9 +54,7 @@ async def read_thread(api, link_id, *, page_size=20, max_pages=100):
                         await api.request(
                             "/bbs/app/comment/sub/comments",
                             params={
-                                "link_id": link_id,
                                 "root_comment_id": root,
-                                "limit": page_size,
                                 **({"lastval": cursor} if cursor else {}),
                             },
                         )
@@ -74,15 +78,40 @@ async def read_thread(api, link_id, *, page_size=20, max_pages=100):
                 else:
                     raise ProtocolError("楼中楼超过分页上限，结果不完整。")
                 if len(items) - 1 < int(items[0].get("child_num") or 0):
-                    raise ProtocolError("楼中楼数量不足，结果不完整。")
+                    if not allow_partial:
+                        raise ProtocolError("楼中楼数量不足，结果不完整。")
+                    # The public cursor is exhausted, but hidden/deleted replies can
+                    # leave an inflated child_num. Never claim those replies were read.
+                    count_mismatches.append({"root_comment_id": root,
+                        "expected": int(items[0].get("child_num") or 0), "visible": len(items) - 1})
             groups.append(group)
-        offset += len(page_groups)
         if not result.get("has_more_floors"):
             first["result"]["comments"] = groups
-            first["result"]["full_comments"] = True
+            first["result"]["full_comments"] = not count_mismatches
+            if count_mismatches:
+                first["result"]["incomplete_reasons"] = {"child_count_mismatch": count_mismatches}
+                first["result"]["visible_pagination_exhausted"] = True
             first["result"]["has_more_floors"] = False
             return first
     raise ProtocolError("评论超过分页上限，结果不完整。")
+
+
+def locate_comment_id(thread, comment_id):
+    """Resolve exactly one comment and its root in a completely read thread."""
+    target = str(comment_id)
+    matches = []
+    for group in (thread.get("result") or {}).get("comments") or []:
+        items = group.get("comment") or []
+        if not items:
+            continue
+        root_id = str(items[0].get("commentid") or "")
+        for item in items:
+            if str(item.get("commentid")) == target:
+                matches.append({"comment_id": target, "reply_id": target,
+                                "root_id": root_id, "target": item})
+    if len(matches) != 1 or not matches[0]["root_id"]:
+        raise OperatorError("评论 ID 不存在或不唯一；未选择任何目标。", "target")
+    return matches[0]
 
 
 class _Text(HTMLParser):

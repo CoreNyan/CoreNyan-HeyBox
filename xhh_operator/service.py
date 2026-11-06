@@ -303,6 +303,7 @@ class Operator:
         return await self.api.request(path, params={**params, "offset": offset, "limit": limit})
 
     async def post(self, postid, *, offset=0, limit=20, sort="hot"):
+        sort = {"latest": "time_desc", "oldest": "time_aes"}.get(sort, sort)
         return await self.api.request(
             "/bbs/app/link/tree",
             params={
@@ -311,11 +312,28 @@ class Operator:
                 "is_first": 1 if offset == 0 else 0,
                 "index": 1,
                 "owner_only": 0,
-                "offset": offset,
                 "limit": limit,
                 "sort_filter": sort,
             },
         )
+
+    async def comments(self, postid, *, page_size=20, max_pages=100, allow_partial=False):
+        """Strict complete thread by default; patrol can request explicitly marked count mismatches."""
+        from .comments import read_thread
+
+        return await read_thread(
+            self.api, identifier(postid), page_size=page_size, max_pages=max_pages, allow_partial=allow_partial
+        )
+
+    async def find_comment(self, postid, comment_id, *, max_pages=100):
+        from .comments import locate_comment_id
+
+        return {
+            "post_id": identifier(postid),
+            **locate_comment_id(
+                await self.comments(postid, max_pages=max_pages, allow_partial=True), identifier(comment_id)
+            ),
+        }
 
     async def posts(self, *, offset=0, limit=20):
         user = await self.require_account()
@@ -666,6 +684,8 @@ class Operator:
     ):
         from .media import inspect_image, same_asset
 
+        if type(max_pages) is not int or not 1 <= max_pages <= 100:
+            raise ValueError("评论分页范围无效。")
         media = [inspect_image(path) for path in images]
         await self.require_account()
         if not content.strip() and not media:
@@ -714,14 +734,6 @@ class Operator:
         }
         if result["comment_id"]:
             try:
-                if reply_id == "-1":
-                    readback = await self.post(postid, sort="latest")
-                else:
-                    readback = await self.api.request(
-                        "/bbs/app/comment/sub/comments",
-                        params={"link_id": postid, "root_comment_id": root_id, "limit": 20},
-                    )
-
                 def matches(value):
                     if isinstance(value, dict):
                         if str(value.get("commentid")) == str(result["comment_id"]):
@@ -735,7 +747,19 @@ class Operator:
                                 }
                             return (
                                 value.get("text") == content
-                                and str(value.get("userid")) == self.session["user_id"]
+                                and str(
+                                    value.get("userid")
+                                    or (value.get("user") or {}).get("userid")
+                                    or (value.get("user") or {}).get("heybox_id")
+                                    or (value.get("author") or {}).get("userid")
+                                ) == self.session["user_id"]
+                                and (
+                                    str(value.get("replyid", value.get("reply_id"))) == str(reply_id)
+                                    or (
+                                        reply_id == "-1"
+                                        and value.get("replyid", value.get("reply_id")) is None
+                                    )
+                                )
                                 and (
                                     not form.get("imgs")
                                     or all(
@@ -751,7 +775,62 @@ class Operator:
                         return any(matches(v) for v in value)
                     return False
 
-                result["verified"] = matches(readback)
+                # Receipt verification is bounded, read-only, and independent of thread counts.
+                if reply_id == "-1":
+                    seen_roots = set()
+                    for page in range(max_pages):
+                        readback = await self.post(
+                            postid, offset=page * 20, limit=20, sort="latest"
+                        )
+                        returned = readback.get("result") or {}
+                        roots = [
+                            group["comment"][0]
+                            for group in (returned.get("comments") or [])
+                            if isinstance(group, dict) and group.get("comment")
+                        ]
+                        if matches(roots):
+                            result["verified"] = True
+                            break
+                        root_ids = {
+                            str(item["commentid"])
+                            for item in roots
+                            if isinstance(item, dict) and item.get("commentid") is not None
+                        }
+                        if not root_ids - seen_roots or not returned.get("has_more_floors"):
+                            break
+                        seen_roots.update(root_ids)
+                else:
+                    # Preserve the initial target cursor, then follow the returned page cursor.
+                    cursor = str(reply_id)
+                    seen_cursors = {cursor}
+                    for _ in range(max_pages):
+                        readback = await self.api.request(
+                            "/bbs/app/comment/sub/comments",
+                            params={
+                                "root_comment_id": root_id,
+                                **({"lastval": cursor} if cursor else {}),
+                            },
+                        )
+                        returned = readback.get("result") or {}
+                        returned_comments = returned.get("comments") or []
+                        if matches(returned_comments):
+                            result["verified"] = True
+                            break
+                        next_cursor = str(
+                            returned.get("lastval")
+                            or (
+                                returned_comments[-1].get("commentid")
+                                if returned_comments and isinstance(returned_comments[-1], dict)
+                                else ""
+                            )
+                            or ""
+                        )
+                        if not returned.get("has_more") or not next_cursor:
+                            break
+                        if next_cursor in seen_cursors:
+                            break
+                        seen_cursors.add(next_cursor)
+                        cursor = next_cursor
             except OperatorError as exc:
                 result["readback_error"] = exc.code
         return result

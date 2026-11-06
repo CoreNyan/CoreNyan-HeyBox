@@ -97,8 +97,15 @@ class HeyboxAPI:
                     else "请稍后重试。"
                 )
                 raise OperatorError("连接小黑盒失败。" + suffix, "network", 6) from None
-        if response.status_code in (401, 403):
+        if response.status_code == 401:
             raise AuthError()
+        if response.status_code == 403:
+            # An edge/proxy HTML denial can reject even anonymous login/bootstrap
+            # requests. It is not evidence that the saved account session expired.
+            raise OperatorError(
+                "小黑盒返回 HTTP 403 Forbidden，请检查官网/API连通性或平台访问限制；"
+                "不能据此认定登录过期，不会自动重试或清除会话。", "forbidden", 4
+            )
         if response.status_code == 429:
             raise OperatorError("小黑盒限流，已停止请求。", "rate_limit", 4)
         if not response.is_success:
@@ -118,5 +125,11 @@ class HeyboxAPI:
             raise OperatorError(
                 "小黑盒要求验证码，请通过 xiaoheihe login --browser 完成验证。", "captcha", 4
             )
-        # Do not echo arbitrary upstream messages that may include session material.
-        raise OperatorError("小黑盒拒绝了操作，请检查账号权限、内容及接口兼容性。")
+        # Preserve a useful status category without echoing arbitrary upstream material.
+        category = (
+            status
+            if isinstance(status, str)
+            and status in {"error", "failed", "forbidden", "permission_denied"}
+            else "rejected"
+        )
+        raise OperatorError(f"小黑盒拒绝了操作: [{category}] 请检查账号权限、内容及接口兼容性。")
