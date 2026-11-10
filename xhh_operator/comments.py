@@ -33,8 +33,10 @@ async def read_thread(api, link_id, *, page_size=20, max_pages=100, allow_partia
                 raise ProtocolError("空评论页仍标记为有下一页，结果不完整。")
             first["result"]["comments"] = groups
             first["result"]["full_comments"] = False
-            first["result"]["incomplete_reasons"] = {"empty_root_page_with_more": page + 1,
-                "child_count_mismatch": count_mismatches}
+            first["result"]["incomplete_reasons"] = {
+                "empty_root_page_with_more": page + 1,
+                "child_count_mismatch": count_mismatches,
+            }
             # Retain the upstream has_more flag: an empty page is not proof of completion.
             return first
         for group in page_groups:
@@ -82,8 +84,13 @@ async def read_thread(api, link_id, *, page_size=20, max_pages=100, allow_partia
                         raise ProtocolError("楼中楼数量不足，结果不完整。")
                     # The public cursor is exhausted, but hidden/deleted replies can
                     # leave an inflated child_num. Never claim those replies were read.
-                    count_mismatches.append({"root_comment_id": root,
-                        "expected": int(items[0].get("child_num") or 0), "visible": len(items) - 1})
+                    count_mismatches.append(
+                        {
+                            "root_comment_id": root,
+                            "expected": int(items[0].get("child_num") or 0),
+                            "visible": len(items) - 1,
+                        }
+                    )
             groups.append(group)
         if not result.get("has_more_floors"):
             first["result"]["comments"] = groups
@@ -107,8 +114,9 @@ def locate_comment_id(thread, comment_id):
         root_id = str(items[0].get("commentid") or "")
         for item in items:
             if str(item.get("commentid")) == target:
-                matches.append({"comment_id": target, "reply_id": target,
-                                "root_id": root_id, "target": item})
+                matches.append(
+                    {"comment_id": target, "reply_id": target, "root_id": root_id, "target": item}
+                )
     if len(matches) != 1 or not matches[0]["root_id"]:
         raise OperatorError("评论 ID 不存在或不唯一；未选择任何目标。", "target")
     return matches[0]

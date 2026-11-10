@@ -67,3 +67,6 @@ bridge_state.sqlite3*
 .env.*
 profile/
 profiles/
+
+logs/
+!config.example.json

@@ -322,7 +322,11 @@ class Operator:
         from .comments import read_thread
 
         return await read_thread(
-            self.api, identifier(postid), page_size=page_size, max_pages=max_pages, allow_partial=allow_partial
+            self.api,
+            identifier(postid),
+            page_size=page_size,
+            max_pages=max_pages,
+            allow_partial=allow_partial,
         )
 
     async def find_comment(self, postid, comment_id, *, max_pages=100):
@@ -331,7 +335,8 @@ class Operator:
         return {
             "post_id": identifier(postid),
             **locate_comment_id(
-                await self.comments(postid, max_pages=max_pages, allow_partial=True), identifier(comment_id)
+                await self.comments(postid, max_pages=max_pages, allow_partial=True),
+                identifier(comment_id),
             ),
         }
 
@@ -734,6 +739,7 @@ class Operator:
         }
         if result["comment_id"]:
             try:
+
                 def matches(value):
                     if isinstance(value, dict):
                         if str(value.get("commentid")) == str(result["comment_id"]):
@@ -752,9 +758,11 @@ class Operator:
                                     or (value.get("user") or {}).get("userid")
                                     or (value.get("user") or {}).get("heybox_id")
                                     or (value.get("author") or {}).get("userid")
-                                ) == self.session["user_id"]
+                                )
+                                == self.session["user_id"]
                                 and (
-                                    str(value.get("replyid", value.get("reply_id"))) == str(reply_id)
+                                    str(value.get("replyid", value.get("reply_id")))
+                                    == str(reply_id)
                                     or (
                                         reply_id == "-1"
                                         and value.get("replyid", value.get("reply_id")) is None

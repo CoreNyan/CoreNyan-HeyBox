@@ -8,7 +8,8 @@ from urllib.parse import unquote
 
 _SECRET_KEY = re.compile(
     r"password|passwd|pwd|secret|token|api[_-]?key|authorization|cookie|credential|"
-    r"private[_-]?key|密码|口令|令牌|密钥", re.I
+    r"private[_-]?key|密码|口令|令牌|密钥",
+    re.I,
 )
 
 
@@ -64,7 +65,12 @@ def blocked_reason(value):
     for _ in range(4):
         before = text
         text = html.unescape(text)
-        text = re.sub(r"(?:%[0-9a-f]{2})+", lambda match: _decode_percent_run(match.group(0)), text, flags=re.I)
+        text = re.sub(
+            r"(?:%[0-9a-f]{2})+",
+            lambda match: _decode_percent_run(match.group(0)),
+            text,
+            flags=re.I,
+        )
         text = unicodedata.normalize("NFKC", text)
         text = re.sub(r"§[0-9a-fk-orx]", "", text, flags=re.I)
         text = re.sub(r"[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]", "", text)
@@ -92,13 +98,17 @@ def blocked_reason(value):
             pass
     if re.search(
         r"(?:password|passwd|pwd|secret|token|api[_ -]?key|authorization|cookie|密码|口令|令牌|密钥)"
-        r"[\s\"\x27]*(?:是|为|[:：=])[\s\"\x27]*[^\s\"\x27，。；;]{2,}", text, re.I
+        r"[\s\"\x27]*(?:是|为|[:：=])[\s\"\x27]*[^\s\"\x27，。；;]{2,}",
+        text,
+        re.I,
     ):
         return "SECRET_ASSIGNMENT"
     if re.search(
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----|bearer\s+\S{8,}|\bsk-[A-Za-z0-9_-]{12,}|"
         r"\beyJ[\w-]+\.[\w-]+\.[\w-]+|(?:mysql|redis|postgres(?:ql)?):\/\/[^\s]+@|"
-        r"\/(?:login|register|changepassword|l|reg)\s+\S+", text, re.I
+        r"\/(?:login|register|changepassword|l|reg)\s+\S+",
+        text,
+        re.I,
     ):
         return "CREDENTIAL"
     return None

@@ -1,0 +1,11 @@
+{
+  "enabled": false,
+  "namespace": "corenyan",
+  "redis": {
+    "host": "corenyan-redis",
+    "port": 6379,
+    "password": "SET_PRIVATE_VALUE"
+  },
+  "poll_interval_seconds": 60,
+  "monitored_posts": []
+}

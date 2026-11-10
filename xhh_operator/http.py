@@ -104,7 +104,9 @@ class HeyboxAPI:
             # requests. It is not evidence that the saved account session expired.
             raise OperatorError(
                 "小黑盒返回 HTTP 403 Forbidden，请检查官网/API连通性或平台访问限制；"
-                "不能据此认定登录过期，不会自动重试或清除会话。", "forbidden", 4
+                "不能据此认定登录过期，不会自动重试或清除会话。",
+                "forbidden",
+                4,
             )
         if response.status_code == 429:
             raise OperatorError("小黑盒限流，已停止请求。", "rate_limit", 4)

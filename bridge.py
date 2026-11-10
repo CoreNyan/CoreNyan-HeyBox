@@ -7,7 +7,6 @@ persists its work and calls heybox_ack_comment_event. See docs/bridge.md.
 
 import asyncio
 import dataclasses
-from contextvars import ContextVar
 import hashlib
 import json
 import logging
@@ -15,8 +14,10 @@ import math
 import os
 import sqlite3
 import time
+from contextvars import ContextVar
 from datetime import date, datetime
 from enum import Enum
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from typing import Any
 
@@ -27,9 +28,9 @@ from xhh_operator.session import safe_result
 logger = logging.getLogger("HeyBoxBridge")
 ROOT = Path(__file__).resolve().parent
 REDIS_URL = os.getenv("REDIS_URL")
-REQ_CHANNEL = "freecore:heybox:tool:request"
-RES_CHANNEL = "freecore:heybox:tool:response"
-EVENT_CHANNEL = "freecore:heybox:event:comment"
+REQ_CHANNEL = "corenyan:heybox:tool:request"
+RES_CHANNEL = "corenyan:heybox:tool:response"
+EVENT_CHANNEL = "corenyan:heybox:event:comment"
 CONFIG_PATH = ROOT / "config.json"
 PROCESSED_COMMENTS_FILE = ROOT / "processed_comments.json"
 STATE_PATH = ROOT / "bridge_state.sqlite3"
@@ -38,9 +39,15 @@ state = None
 monitored_posts = set()
 write_started = ContextVar("heybox_write_started", default=False)
 WRITE_TOOLS = {
-    "heybox_publish_post", "publish_post", "publish_article",
-    "heybox_post_comment", "comment_post", "heybox_reply_comment", "reply_comment",
-    "heybox_pin_comment", "pin_comment",
+    "heybox_publish_post",
+    "publish_post",
+    "publish_article",
+    "heybox_post_comment",
+    "comment_post",
+    "heybox_reply_comment",
+    "reply_comment",
+    "heybox_pin_comment",
+    "pin_comment",
 }
 
 
@@ -136,7 +143,9 @@ class BridgeState:
                 if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
                     raise ValueError("Invalid legacy comment state")
             with self.db:
-                self.db.executemany("INSERT OR IGNORE INTO legacy_seen VALUES (?)", [(i,) for i in ids])
+                self.db.executemany(
+                    "INSERT OR IGNORE INTO legacy_seen VALUES (?)", [(i,) for i in ids]
+                )
                 self.db.execute("INSERT INTO meta VALUES ('legacy_imported','1')")
 
     def close(self):
@@ -154,16 +163,25 @@ class BridgeState:
         with self.db:
             if self.db.execute("SELECT 1 FROM seen WHERE event_id=?", (event_id,)).fetchone():
                 return
-            if self.db.execute("SELECT 1 FROM legacy_seen WHERE comment_id=?", (payload["comment_id"],)).fetchone():
+            if self.db.execute(
+                "SELECT 1 FROM legacy_seen WHERE comment_id=?", (payload["comment_id"],)
+            ).fetchone():
                 return
-            self.db.execute("INSERT OR IGNORE INTO pending VALUES (?,?)", (event_id, dumps(payload)))
+            self.db.execute(
+                "INSERT OR IGNORE INTO pending VALUES (?,?)", (event_id, dumps(payload))
+            )
 
     def pending(self):
-        return [json.loads(row[0]) for row in self.db.execute("SELECT payload FROM pending ORDER BY rowid")]
+        return [
+            json.loads(row[0])
+            for row in self.db.execute("SELECT payload FROM pending ORDER BY rowid")
+        ]
 
     def ack(self, event_id):
         with self.db:
-            known = self.db.execute("SELECT 1 FROM pending WHERE event_id=?", (event_id,)).fetchone()
+            known = self.db.execute(
+                "SELECT 1 FROM pending WHERE event_id=?", (event_id,)
+            ).fetchone()
             seen = self.db.execute("SELECT 1 FROM seen WHERE event_id=?", (event_id,)).fetchone()
             if not known and not seen:
                 raise ValueError("Unknown comment event id")
@@ -172,16 +190,29 @@ class BridgeState:
         return {"success": True, "event_id": event_id, "acknowledged": True}
 
     def begin_request(self, req_id, fingerprint):
-        row = self.db.execute("SELECT fingerprint,response FROM requests WHERE id=?", (req_id,)).fetchone()
+        row = self.db.execute(
+            "SELECT fingerprint,response FROM requests WHERE id=?", (req_id,)
+        ).fetchone()
         if row:
             if row[0] != fingerprint:
                 raise ValueError("RPC id reused with different arguments")
-            return json.loads(row[1]) if row[1] else {
-                "id": req_id, "success": False, "data": {
-                    "success": False, "accepted": False, "verified": False,
-                    "status": "unknown", "submission_state": "unknown", "retry_safe": False,
-                }, "error": "Previous submission outcome is unknown; do not retry",
-            }
+            return (
+                json.loads(row[1])
+                if row[1]
+                else {
+                    "id": req_id,
+                    "success": False,
+                    "data": {
+                        "success": False,
+                        "accepted": False,
+                        "verified": False,
+                        "status": "unknown",
+                        "submission_state": "unknown",
+                        "retry_safe": False,
+                    },
+                    "error": "Previous submission outcome is unknown; do not retry",
+                }
+            )
         with self.db:
             self.db.execute("INSERT INTO requests VALUES (?,?,NULL)", (req_id, fingerprint))
         return None
@@ -243,7 +274,10 @@ def write_result(raw, id_key):
     record_id = raw.get(id_key)
     success = bool(accepted and verified and record_id)
     return {
-        **raw, "accepted": accepted, "verified": bool(success), "success": success,
+        **raw,
+        "accepted": accepted,
+        "verified": bool(success),
+        "success": success,
         "status": "verified" if success else "unverified" if accepted else "unknown",
         "submission_state": "verified" if success else "accepted" if accepted else "unknown",
         "retry_safe": False,
@@ -284,27 +318,50 @@ async def find_comment(args):
 
 
 async def handle_tool(tool_name: str, args: dict[str, Any]):
+    if load_config().get("enabled") is not True:
+        raise ValueError("MODULE_DISABLED: heybox")
     if not isinstance(tool_name, str) or not isinstance(args, dict):
         raise ValueError("Invalid tool or args")
     tool_name = tool_name.lower().strip()
     if tool_name in WRITE_TOOLS:
         from sensitive_output import blocked_reason
+
         if blocked_reason(args):
-            return {"success": False, "accepted": False, "verified": False, "status": "rejected",
-                    "error_code": "SENSITIVE_OUTPUT_BLOCKED", "submission_state": "not_submitted", "retry_safe": False}
+            return {
+                "success": False,
+                "accepted": False,
+                "verified": False,
+                "status": "rejected",
+                "error_code": "SENSITIVE_OUTPUT_BLOCKED",
+                "submission_state": "not_submitted",
+                "retry_safe": False,
+            }
         # Image uploads require a separate reviewed workflow; text scanning cannot inspect pixels.
         if args.get("images"):
-            return {"success": False, "accepted": False, "verified": False, "status": "rejected",
-                    "error_code": "UNREVIEWED_MEDIA_BLOCKED", "submission_state": "not_submitted", "retry_safe": False}
+            return {
+                "success": False,
+                "accepted": False,
+                "verified": False,
+                "status": "rejected",
+                "error_code": "UNREVIEWED_MEDIA_BLOCKED",
+                "submission_state": "not_submitted",
+                "retry_safe": False,
+            }
     if tool_name == "heybox_ack_comment_event":
         return require_state().ack(text_arg(args, "event_id"))
     if tool_name in ("heybox_pin_comment", "pin_comment"):
         # No evidenced write endpoint exists in this Operator. Never guess one.
         return {
-            "success": False, "accepted": False, "verified": False,
-            "supported": False, "status": "unsupported", "error_code": "unsupported",
-            "submission_state": "not_submitted", "retry_safe": False,
-            "post_id": post_id_arg(args), "comment_id": identifier(text_arg(args, "comment_id")),
+            "success": False,
+            "accepted": False,
+            "verified": False,
+            "supported": False,
+            "status": "unsupported",
+            "error_code": "unsupported",
+            "submission_state": "not_submitted",
+            "retry_safe": False,
+            "post_id": post_id_arg(args),
+            "comment_id": identifier(text_arg(args, "comment_id")),
             "pinned": boolean(args, "pinned", True),
         }
     if operator is None:
@@ -312,29 +369,51 @@ async def handle_tool(tool_name: str, args: dict[str, Any]):
     if tool_name in ("heybox_publish_post", "publish_post", "publish_article"):
         title, content = text_arg(args, "title"), text_arg(args, "content")
         communities = list_arg(args, "communities")
-        communities = list(dict.fromkeys("Minecraft" if c in ("我的世界", "mc", "MC") else c for c in communities))
+        communities = list(
+            dict.fromkeys("Minecraft" if c in ("我的世界", "mc", "MC") else c for c in communities)
+        )
         tags = list_arg(args, "tags") if "tags" in args else list_arg(args, "hashtags")
         images = list_arg(args, "images")
         draft = boolean(args, "draft")
         if len(communities) > 2 or len(tags) > 5:
             raise ValueError("Too many communities or hashtags")
-        result = await submit(operator.write_post(
-            title=title, content=content, post_kind="article", images=images,
-            communities=communities, hashtags=tags, draft=draft, dry_run=False,
-        ), "link_id")
+        result = await submit(
+            operator.write_post(
+                title=title,
+                content=content,
+                post_kind="article",
+                images=images,
+                communities=communities,
+                hashtags=tags,
+                draft=draft,
+                dry_run=False,
+            ),
+            "link_id",
+        )
         if result.get("link_id") and result.get("accepted") and not draft:
             require_state().add_post(str(result["link_id"]))
             monitored_posts.add(str(result["link_id"]))
-        result["url"] = f"https://www.xiaoheihe.cn/link/{result['link_id']}" if result.get("link_id") else ""
+        result["url"] = (
+            f"https://www.xiaoheihe.cn/link/{result['link_id']}" if result.get("link_id") else ""
+        )
         return result
     if tool_name in ("heybox_get_post", "get_post"):
         return await operator.post(post_id_arg(args))
     if tool_name in ("heybox_get_comments", "get_comments"):
-        return await operator.comments(post_id_arg(args), page_size=bounded_int(args, "limit", 20),
-                                       max_pages=bounded_int(args, "max_pages", 100), allow_partial=True)
+        return await operator.comments(
+            post_id_arg(args),
+            page_size=bounded_int(args, "limit", 20),
+            max_pages=bounded_int(args, "max_pages", 100),
+            allow_partial=True,
+        )
     if tool_name in ("heybox_find_comment", "find_comment"):
         return await find_comment(args)
-    if tool_name in ("heybox_post_comment", "comment_post", "heybox_reply_comment", "reply_comment"):
+    if tool_name in (
+        "heybox_post_comment",
+        "comment_post",
+        "heybox_reply_comment",
+        "reply_comment",
+    ):
         content, images = text_arg(args, "content"), list_arg(args, "images")
         reply_id = args.get("comment_id") or args.get("reply_id")
         # Core packets carry target_comment as approval context alongside exact IDs.
@@ -378,6 +457,13 @@ async def handle_tool(tool_name: str, args: dict[str, Any]):
 
 
 async def process_packet(packet):
+    if load_config().get("enabled") is not True:
+        return {
+            "id": packet.get("id") if isinstance(packet, dict) else None,
+            "success": False,
+            "error_code": "module_disabled",
+            "data": None,
+        }
     write_started.set(False)
     req_id, writing, journaled = None, False, False
     try:
@@ -392,29 +478,51 @@ async def process_packet(packet):
             raise ValueError("Invalid tool or args")
         writing = tool.lower().strip() in WRITE_TOOLS
         if writing:
-            fingerprint = hashlib.sha256(json.dumps(
-                {"tool": tool.lower().strip(), "args": args}, sort_keys=True, ensure_ascii=False,
-                allow_nan=False,
-            ).encode()).hexdigest()
+            fingerprint = hashlib.sha256(
+                json.dumps(
+                    {"tool": tool.lower().strip(), "args": args},
+                    sort_keys=True,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                ).encode()
+            ).hexdigest()
             previous = require_state().begin_request(str(req_id), fingerprint)
             if previous is not None:
                 return previous
             journaled = True
         data = json_value(await handle_tool(tool, args))
         success = not isinstance(data, dict) or data.get("success", True) is True
-        response = {"id": req_id, "success": success, "data": data,
-                    "error": None if success else data.get("error_code", data.get("status", "operation_failed"))}
+        response = {
+            "id": req_id,
+            "success": success,
+            "data": data,
+            "error": None
+            if success
+            else data.get("error_code", data.get("status", "operation_failed")),
+        }
     except Exception as exc:
         uncertain = isinstance(exc, WriteUncertain)
         # Unexpected failures can occur after a write (e.g. persistence/serialization).
-        local = (isinstance(exc, (ValueError, OperatorError)) and not uncertain
-                 and not write_started.get() and (not writing or journaled))
-        response = {"id": req_id, "success": False, "data": None,
-                    "error": "Write outcome unknown; do not resubmit" if writing and not local else "HeyBox request failed",
-                    "error_code": getattr(exc, "code", "invalid_request" if local else "internal")}
+        local = (
+            isinstance(exc, (ValueError, OperatorError))
+            and not uncertain
+            and not write_started.get()
+            and (not writing or journaled)
+        )
+        response = {
+            "id": req_id,
+            "success": False,
+            "data": None,
+            "error": "Write outcome unknown; do not resubmit"
+            if writing and not local
+            else "HeyBox request failed",
+            "error_code": getattr(exc, "code", "invalid_request" if local else "internal"),
+        }
         if writing:
             response["data"] = {
-                "success": False, "accepted": False, "verified": False,
+                "success": False,
+                "accepted": False,
+                "verified": False,
                 "status": "failed" if local else "unknown",
                 "submission_state": "not_submitted" if local else "unknown",
                 "retry_safe": bool(local),
@@ -432,7 +540,9 @@ def comment_items(thread):
         items = group.get("comment") if isinstance(group.get("comment"), list) else [group]
         if not items:
             continue
-        root = str(items[0].get("commentid") or items[0].get("comment_id") or items[0].get("id") or "")
+        root = str(
+            items[0].get("commentid") or items[0].get("comment_id") or items[0].get("id") or ""
+        )
         for item in items:
             if isinstance(item, dict):
                 yield root, item
@@ -522,16 +632,24 @@ async def patrol_once(redis, cfg=None, now=None):
                 if not comment_id or not root_id:
                     continue
                 user = item.get("user") if isinstance(item.get("user"), dict) else {}
-                author_id = str(user.get("userid") or user.get("heybox_id") or item.get("userid") or "")
+                author_id = str(
+                    user.get("userid") or user.get("heybox_id") or item.get("userid") or ""
+                )
                 if author_id and author_id in ignored_ids:
                     continue
                 timestamp = comment_timestamp(item)
                 if timestamp is not None and now - timestamp > 30 * 86400:
                     continue
                 payload = {
-                    "event": "new_comment", "event_id": f"heybox-comment:{post_id}:{comment_id}",
-                    "post_id": post_id, "comment_id": str(comment_id), "root_id": root_id,
-                    "author": user.get("username") or user.get("nickname") or item.get("author") or "",
+                    "event": "new_comment",
+                    "event_id": f"heybox-comment:{post_id}:{comment_id}",
+                    "post_id": post_id,
+                    "comment_id": str(comment_id),
+                    "root_id": root_id,
+                    "author": user.get("username")
+                    or user.get("nickname")
+                    or item.get("author")
+                    or "",
                     "author_id": author_id,
                     "content": comment_text(item.get("text") or item.get("content")),
                     "timestamp": timestamp if timestamp is not None else now,
@@ -554,6 +672,9 @@ async def comment_watcher_loop(redis):
     while True:
         try:
             cfg = load_config()
+            if cfg.get("enabled") is not True:
+                await asyncio.sleep(5)
+                continue
             result = await patrol_once(redis, cfg)
             if result["errors"]:
                 logger.warning("Comment patrol incomplete: %s", result["errors"])
@@ -574,6 +695,22 @@ async def init_services():
 
 
 async def main():
+    cfg = load_config()
+    if cfg.get("enabled") is not True:
+        logger.warning("HeyBox module disabled; no account or Redis connection opened")
+        return
+    global REQ_CHANNEL, RES_CHANNEL, EVENT_CHANNEL
+    namespace = cfg.get("namespace", "corenyan")
+    if (
+        not isinstance(namespace, str)
+        or not namespace.isascii()
+        or not namespace.replace("_", "").isalnum()
+    ):
+        raise ValueError("Invalid namespace")
+    REQ_CHANNEL, RES_CHANNEL, EVENT_CHANNEL = (
+        namespace + ":heybox:" + suffix
+        for suffix in ("tool:request", "tool:response", "event:comment")
+    )
     import redis.asyncio as aioredis
 
     global state
@@ -604,7 +741,15 @@ async def main():
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    (ROOT / "logs").mkdir(exist_ok=True)
+    handler = TimedRotatingFileHandler(
+        ROOT / "logs" / "heybox.log", when="midnight", backupCount=14, encoding="utf-8"
+    )
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [HeyBox] %(levelname)s %(message)s",
+        handlers=[handler, logging.StreamHandler()],
+    )
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

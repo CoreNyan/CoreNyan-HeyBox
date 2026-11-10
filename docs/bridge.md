@@ -14,9 +14,9 @@ existing ignored project configuration; it must not be committed or copied into 
 
 Channels are unchanged:
 
-- Request: `freecore:heybox:tool:request`
-- Response: `freecore:heybox:tool:response`
-- Comment event: `freecore:heybox:event:comment`
+- Request: `corenyan:heybox:tool:request`
+- Response: `corenyan:heybox:tool:response`
+- Comment event: `corenyan:heybox:event:comment`
 
 Requests retain `{ "id": "stable-id", "tool": "heybox_get_comments", "args": {} }`.
 Responses retain `{ "id": "stable-id", "success": true, "data": {}, "error": null }`.
